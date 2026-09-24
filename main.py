@@ -22,8 +22,8 @@ http_client: httpx.AsyncClient = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client
-    # Start up: Create the connection pool with a higher timeout
-    http_client = httpx.AsyncClient(timeout=25.0)
+    # Start up: Create the connection pool
+    http_client = httpx.AsyncClient(timeout=6.0)
     yield
     # Shut down: Close the connections gracefully
     await http_client.aclose()
@@ -48,6 +48,8 @@ app.add_middleware(
 )
 
 OVERPASS_URLS = [
+    "https://overpass.openstreetmap.fr/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter"
 ]
