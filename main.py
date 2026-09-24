@@ -22,8 +22,8 @@ http_client: httpx.AsyncClient = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client
-    # Start up: Create the connection pool
-    http_client = httpx.AsyncClient(timeout=10.0)
+    # Start up: Create the connection pool with a higher timeout
+    http_client = httpx.AsyncClient(timeout=25.0)
     yield
     # Shut down: Close the connections gracefully
     await http_client.aclose()
@@ -47,8 +47,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-USER_AGENT = "RoadQualityAPI/2.0 (Student Project)"
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+]
+USER_AGENT = "RoadQualityAPI/2.0 (contact: simon@example.com)"
 
 road_cache = TTLCache(maxsize=1000, ttl=3600)
 
@@ -81,24 +84,30 @@ async def get_road_info(
     query = f'[out:json];way(around:{radius},{lat},{lon})["highway"];out tags;'
     headers = {'User-Agent': USER_AGENT}
     
-    try:
-        # Hier nutzen wir jetzt den globalen Pool anstatt jedes Mal "async with..." aufzurufen
-        response = await http_client.get(OVERPASS_URL, params={'data': query}, headers=headers)
-        
-        if response.status_code == 429:
-            logger.warning("Overpass API rate limit exceeded.")
-            raise HTTPException(status_code=429, detail="Upstream rate limit exceeded. Please try again later.")
+    last_error = None
+    for url in OVERPASS_URLS:
+        try:
+            response = await http_client.get(url, params={'data': query}, headers=headers)
             
-        response.raise_for_status()
+            if response.status_code == 429:
+                logger.warning(f"Rate limit exceeded on {url}")
+                continue # Try next server
+                
+            response.raise_for_status()
+            data = response.json()
+            break # Success, exit loop
             
-    except httpx.RequestError as e:
-        logger.error(f"HTTP Request failed: {e}")
-        raise HTTPException(status_code=502, detail="Error communicating with OSM Overpass API.")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP Status Error: {e.response.status_code}")
-        raise HTTPException(status_code=502, detail=f"OSM API returned error code: {e.response.status_code}")
-
-    data = response.json()
+        except httpx.RequestError as e:
+            logger.error(f"HTTP Request failed on {url}: {e}")
+            last_error = "Timeout or connection error."
+            continue
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP Status Error on {url}: {e.response.status_code}")
+            last_error = f"OSM API returned {e.response.status_code}"
+            continue
+    else:
+        # Loop finished without breaking -> all servers failed
+        raise HTTPException(status_code=502, detail=f"Upstream Overpass servers unavailable. Last error: {last_error}")
     elements = data.get("elements", [])
     
     if not elements:
